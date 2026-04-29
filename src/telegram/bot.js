@@ -1,9 +1,15 @@
 // Telegram update router for the /quote bot.
-// State machine over: side → pair → client → deposit → fee → summary
+// State machine: side(button) → pair(text) → client(text) → deposit(text) → fee(text) → summary
 
 const tg = require('./api');
-const { getSession, setSession, clearSession } = require('./session');
-const { fetchSpot, SUPPORTED_PAIRS } = require('./spotPrice');
+const {
+  getSession, setSession, clearSession,
+  getCachedSymbols, setCachedSymbols,
+} = require('./session');
+const {
+  fetchSpot, fetchAvailableSymbols,
+  symbolToDisplayPair, displayPairToSymbol,
+} = require('./spotPrice');
 const { formatQuoteSummary } = require('./quote');
 
 const STEP = {
@@ -29,14 +35,34 @@ function sideKeyboard() {
   };
 }
 
-function pairKeyboard() {
-  return {
-    inline_keyboard: [SUPPORTED_PAIRS.map(p => ({ text: p, callback_data: `pair:${p}` }))],
-  };
-}
-
 const forceReply = { force_reply: true, selective: true };
 
+// ---- Symbol catalog ----------------------------------------------------------
+// Try cache first, then live fetch. Cache for 1h via session.js helpers.
+async function getSymbolsCatalog() {
+  const cached = await getCachedSymbols().catch(() => null);
+  if (cached && Array.isArray(cached.symbols) && cached.symbols.length) return cached;
+  const fresh = await fetchAvailableSymbols();
+  await setCachedSymbols(fresh).catch(() => {});
+  return fresh;
+}
+
+function findSymbolMatch(catalog, input) {
+  if (!input) return null;
+  const wanted = displayPairToSymbol(input); // BASE/QUOTE or base-quote → BASE-QUOTE
+  return catalog.symbols.find(s => s.symbol.toUpperCase() === wanted) || null;
+}
+
+function suggestSymbols(catalog, input, limit = 6) {
+  if (!input || !catalog) return [];
+  const q = String(input).toUpperCase().replace(/[\s/_-]/g, '');
+  return catalog.symbols
+    .filter(s => s.symbol.toUpperCase().replace('-', '').includes(q))
+    .slice(0, limit)
+    .map(s => s.symbol);
+}
+
+// ---- Handlers ----------------------------------------------------------------
 async function handleUpdate(update) {
   if (update.message) return handleMessage(update.message);
   if (update.callback_query) return handleCallback(update.callback_query);
@@ -46,7 +72,7 @@ async function handleMessage(msg) {
   const chatId = msg.chat && msg.chat.id;
   const userId = msg.from && msg.from.id;
   if (!chatId || !userId) return;
-  if (!isAllowedChat(chatId)) return; // silently ignore foreign chats
+  if (!isAllowedChat(chatId)) return;
 
   const text = (msg.text || '').trim();
 
@@ -74,9 +100,40 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Otherwise: treat as a step reply if there's an active session expecting text.
   const session = await getSession(chatId, userId);
   if (!session) return;
+
+  if (session.step === STEP.PAIR) {
+    if (!text) {
+      await tg.sendMessage({ chat_id: chatId, text: 'Type pair (e.g. `USDT-GBP`):', parse_mode: 'Markdown', reply_markup: forceReply });
+      return;
+    }
+    let catalog;
+    try {
+      catalog = await getSymbolsCatalog();
+    } catch (e) {
+      await tg.sendMessage({ chat_id: chatId, text: `Couldn't fetch SDM symbols: ${e.message}` });
+      return;
+    }
+    const match = findSymbolMatch(catalog, text);
+    if (!match) {
+      const suggestions = suggestSymbols(catalog, text);
+      const hint = suggestions.length ? `Did you mean: ${suggestions.join(', ')}?` : 'Try e.g. `USDT-GBP`.';
+      await tg.sendMessage({
+        chat_id: chatId,
+        text: `Pair "${text}" not in SDM catalog. ${hint}`,
+        parse_mode: 'Markdown',
+        reply_markup: forceReply,
+      });
+      return;
+    }
+    session.symbol = match.symbol;                       // SDM canonical e.g. USDT-GBP
+    session.pair = symbolToDisplayPair(match.symbol);    // Display e.g. USDT/GBP
+    session.step = STEP.CLIENT;
+    await setSession(chatId, userId, session);
+    await tg.sendMessage({ chat_id: chatId, text: 'Client name?', reply_markup: forceReply });
+    return;
+  }
 
   if (session.step === STEP.CLIENT) {
     if (!text) {
@@ -143,7 +200,6 @@ async function handleCallback(cb) {
 
   if (data.startsWith('side:')) {
     if (session.step && session.step !== STEP.SIDE) {
-      // Idempotent no-op: button already advanced.
       return tg.answerCallbackQuery({ callback_query_id: cb.id });
     }
     const side = data.slice(5);
@@ -156,29 +212,14 @@ async function handleCallback(cb) {
     await tg.editMessageText({
       chat_id: chatId,
       message_id: messageId,
-      text: `Side: ${side === 'buy' ? 'Buy' : 'Sell'}\nChoose pair:`,
-      reply_markup: pairKeyboard(),
+      text: `Side: ${side === 'buy' ? 'Buy' : 'Sell'}`,
     });
-    return tg.answerCallbackQuery({ callback_query_id: cb.id });
-  }
-
-  if (data.startsWith('pair:')) {
-    if (session.step && session.step !== STEP.PAIR) {
-      return tg.answerCallbackQuery({ callback_query_id: cb.id });
-    }
-    const pair = data.slice(5);
-    if (!SUPPORTED_PAIRS.includes(pair)) {
-      return tg.answerCallbackQuery({ callback_query_id: cb.id, text: 'Bad pair' });
-    }
-    session.pair = pair;
-    session.step = STEP.CLIENT;
-    await setSession(chatId, userId, session);
-    await tg.editMessageText({
+    await tg.sendMessage({
       chat_id: chatId,
-      message_id: messageId,
-      text: `Side: ${session.side === 'buy' ? 'Buy' : 'Sell'}\nPair: ${pair}`,
+      text: 'Type pair (e.g. `USDT-GBP`):',
+      parse_mode: 'Markdown',
+      reply_markup: forceReply,
     });
-    await tg.sendMessage({ chat_id: chatId, text: 'Client name?', reply_markup: forceReply });
     return tg.answerCallbackQuery({ callback_query_id: cb.id });
   }
 
@@ -186,10 +227,9 @@ async function handleCallback(cb) {
 }
 
 async function finishQuote(chatId, userId, session) {
-  let spot;
+  let spotResult;
   try {
-    const r = await fetchSpot(session.pair);
-    spot = r.price;
+    spotResult = await fetchSpot(session.symbol);
   } catch (e) {
     await tg.sendMessage({
       chat_id: chatId,
@@ -207,7 +247,7 @@ async function finishQuote(chatId, userId, session) {
       side: session.side,
       deposit: session.deposit,
       fee: session.fee,
-      spot,
+      spot: spotResult.price,
     });
   } catch (e) {
     await tg.sendMessage({ chat_id: chatId, text: `Quote error: ${e.message}` });
@@ -220,14 +260,11 @@ async function finishQuote(chatId, userId, session) {
 }
 
 function parseNumber(s) {
-  // Accept "14,000.00", "14000", "0.4", "0,4" (comma decimal), etc.
   const cleaned = String(s).replace(/[\s_]/g, '');
-  // If it has both comma and dot, assume comma is thousands.
   let normalized;
   if (cleaned.includes(',') && cleaned.includes('.')) {
     normalized = cleaned.replace(/,/g, '');
   } else if (cleaned.includes(',') && !cleaned.includes('.')) {
-    // single comma → could be decimal (european) or thousands. Treat as decimal if there's exactly one and ≤2 trailing digits.
     const parts = cleaned.split(',');
     if (parts.length === 2 && parts[1].length > 0 && parts[1].length <= 2) normalized = cleaned.replace(',', '.');
     else normalized = cleaned.replace(/,/g, '');

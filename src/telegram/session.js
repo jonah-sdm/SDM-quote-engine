@@ -1,7 +1,9 @@
-// Per-(chat,user) conversation state for the /quote flow. Backed by Upstash Redis
-// (HTTP) so it works from Vercel serverless cold starts. 10-minute TTL.
+// Per-(chat,user) conversation state for the /quote flow + a generic cache
+// for shared lookups (e.g. SDM symbol catalog). Backed by Upstash Redis (HTTP)
+// so it works from Vercel serverless cold starts.
 
-const TTL_SECONDS = 10 * 60;
+const SESSION_TTL_SECONDS = 10 * 60;
+const SYMBOLS_TTL_SECONDS = 60 * 60; // 1 hour
 
 let _redis = null;
 function client() {
@@ -14,21 +16,38 @@ function client() {
   return _redis;
 }
 
-const key = (chatId, userId) => `tgquote:${chatId}:${userId}`;
+const sessionKey = (chatId, userId) => `tgquote:${chatId}:${userId}`;
+const SYMBOLS_KEY = 'cache:sdm:symbols';
 
 async function getSession(chatId, userId) {
-  const v = await client().get(key(chatId, userId));
+  const v = await client().get(sessionKey(chatId, userId));
   if (!v) return null;
-  // Upstash auto-parses JSON when value was stored as an object; tolerate either form.
   return typeof v === 'string' ? JSON.parse(v) : v;
 }
 
 async function setSession(chatId, userId, data) {
-  await client().set(key(chatId, userId), JSON.stringify(data), { ex: TTL_SECONDS });
+  await client().set(sessionKey(chatId, userId), JSON.stringify(data), { ex: SESSION_TTL_SECONDS });
 }
 
 async function clearSession(chatId, userId) {
-  await client().del(key(chatId, userId));
+  await client().del(sessionKey(chatId, userId));
 }
 
-module.exports = { getSession, setSession, clearSession };
+async function getCachedSymbols() {
+  const v = await client().get(SYMBOLS_KEY);
+  if (!v) return null;
+  return typeof v === 'string' ? JSON.parse(v) : v;
+}
+
+async function setCachedSymbols(data) {
+  await client().set(SYMBOLS_KEY, JSON.stringify(data), { ex: SYMBOLS_TTL_SECONDS });
+}
+
+async function clearCachedSymbols() {
+  await client().del(SYMBOLS_KEY);
+}
+
+module.exports = {
+  getSession, setSession, clearSession,
+  getCachedSymbols, setCachedSymbols, clearCachedSymbols,
+};
