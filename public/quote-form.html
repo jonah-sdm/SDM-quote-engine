@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SDM Quote</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --tg-bg: var(--tg-theme-bg-color, #ffffff);
+      --tg-text: var(--tg-theme-text-color, #000000);
+      --tg-hint: var(--tg-theme-hint-color, #707579);
+      --tg-button: var(--tg-theme-button-color, #2481cc);
+      --tg-button-text: var(--tg-theme-button-text-color, #ffffff);
+      --tg-secondary-bg: var(--tg-theme-secondary-bg-color, #f4f4f5);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--tg-bg);
+      color: var(--tg-text);
+      -webkit-tap-highlight-color: transparent;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--tg-hint);
+      margin: 14px 0 6px;
+      letter-spacing: 0.01em;
+    }
+    input, select {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      background: var(--tg-secondary-bg);
+      color: var(--tg-text);
+      border: 1px solid transparent;
+      border-radius: 10px;
+      appearance: none;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--tg-button); }
+    .side-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .side-toggle button {
+      padding: 12px;
+      font-size: 15px;
+      font-weight: 500;
+      border: 1px solid var(--tg-secondary-bg);
+      background: var(--tg-secondary-bg);
+      color: var(--tg-text);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s;
+    }
+    .side-toggle button.active {
+      background: var(--tg-button);
+      color: var(--tg-button-text);
+      border-color: var(--tg-button);
+    }
+    .deposit-row { position: relative; }
+    .deposit-row .ccy {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--tg-hint);
+      font-size: 13px;
+      pointer-events: none;
+      font-weight: 500;
+    }
+    .submit {
+      width: 100%;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      background: var(--tg-button);
+      color: var(--tg-button-text);
+      border: none;
+      border-radius: 10px;
+      margin-top: 24px;
+      cursor: pointer;
+    }
+    .submit:disabled { opacity: 0.6; cursor: default; }
+    .error { color: #d70015; font-size: 13px; margin-top: 10px; min-height: 16px; }
+    .footer-hint {
+      font-size: 12px;
+      color: var(--tg-hint);
+      margin-top: 14px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>New Trade Quote</h1>
+
+  <form id="form">
+    <label>Side</label>
+    <div class="side-toggle">
+      <button type="button" class="active" data-side="buy">Buy</button>
+      <button type="button" data-side="sell">Sell</button>
+    </div>
+
+    <label for="pair">Pair</label>
+    <select id="pair" required>
+      <option value="">Loading…</option>
+    </select>
+
+    <label for="client">Client name</label>
+    <input id="client" type="text" autocomplete="off" placeholder="e.g. BMI Metals Ltd." required />
+
+    <label for="deposit" id="deposit-label">Deposit amount</label>
+    <div class="deposit-row">
+      <input id="deposit" type="number" step="any" min="0" placeholder="14000" required inputmode="decimal" />
+      <span class="ccy" id="deposit-ccy"></span>
+    </div>
+
+    <label for="fee">Fee (%)</label>
+    <input id="fee" type="number" step="any" placeholder="0.4" required inputmode="decimal" />
+
+    <button type="submit" class="submit" id="submit-btn">Generate quote</button>
+    <div class="error" id="error"></div>
+    <div class="footer-hint">Spot is fetched live from SDM at submit.</div>
+  </form>
+
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg) { tg.ready(); tg.expand(); }
+
+    const state = { side: 'buy' };
+
+    function $(id) { return document.getElementById(id); }
+    function showErr(msg) { $('error').textContent = msg || ''; }
+
+    document.querySelectorAll('.side-toggle button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.side = btn.dataset.side;
+        document.querySelectorAll('.side-toggle button').forEach(function (b) {
+          b.classList.toggle('active', b === btn);
+        });
+        updateDepositCcy();
+      });
+    });
+
+    function updateDepositCcy() {
+      const sym = $('pair').value;
+      if (!sym) { $('deposit-ccy').textContent = ''; $('deposit-label').textContent = 'Deposit amount'; return; }
+      const parts = sym.split('-');
+      const base = parts[0], quote = parts[1] || '';
+      const ccy = state.side === 'buy' ? quote : base;
+      $('deposit-ccy').textContent = ccy;
+      $('deposit-label').textContent = 'Deposit amount' + (ccy ? ' (' + ccy + ')' : '');
+    }
+
+    async function loadSymbols() {
+      try {
+        const r = await fetch('/api/symbols', { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        const symbols = (data.symbols || []).slice().sort(function (a, b) {
+          return a.symbol.localeCompare(b.symbol);
+        });
+        const sel = $('pair');
+        sel.innerHTML = '<option value="">Select pair…</option>';
+        symbols.forEach(function (s) {
+          const o = document.createElement('option');
+          o.value = s.symbol;
+          o.textContent = s.symbol.replace('-', '/');
+          sel.appendChild(o);
+        });
+      } catch (e) {
+        showErr('Failed to load pairs: ' + e.message);
+      }
+    }
+
+    $('pair').addEventListener('change', updateDepositCcy);
+
+    $('form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      showErr('');
+      const btn = $('submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'Submitting…';
+
+      const payload = {
+        initData: tg ? tg.initData : '',
+        side: state.side,
+        symbol: $('pair').value,
+        client: $('client').value,
+        deposit: $('deposit').value,
+        fee: $('fee').value,
+      };
+
+      try {
+        const r = await fetch('/api/quote-submit', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json().catch(function () { return {}; });
+        if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        btn.textContent = 'Quote sent ✓';
+        setTimeout(function () { if (tg) tg.close(); }, 700);
+      } catch (e) {
+        showErr(e.message || 'Failed');
+        btn.disabled = false;
+        btn.textContent = 'Generate quote';
+      }
+    });
+
+    loadSymbols();
+  </script>
+</body>
+</html>
