@@ -129,9 +129,9 @@
     if (tg) { tg.ready(); tg.expand(); }
 
     const state = { side: 'buy' };
-    const TOKEN = new URLSearchParams(window.location.search).get('t') || '';
-    if (!TOKEN) {
-      document.getElementById('error').textContent = 'No access token — open this from /quote in the Telegram group.';
+    const INIT_DATA = (tg && tg.initData) ? tg.initData : '';
+    if (!INIT_DATA) {
+      document.getElementById('error').textContent = 'Open this form from /quote inside the Telegram group.';
       document.getElementById('submit-btn').disabled = true;
     }
 
@@ -189,7 +189,7 @@
       btn.textContent = 'Submitting…';
 
       const payload = {
-        token: TOKEN,
+        initData: INIT_DATA,
         side: state.side,
         symbol: $('pair').value,
         client: $('client').value,
