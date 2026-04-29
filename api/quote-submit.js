@@ -1,9 +1,9 @@
 // Vercel handler: POST /api/quote-submit
-// Receives form submission from the Telegram Web App, validates the request
-// came from a real Telegram user (initData HMAC), fetches live SDM spot,
-// formats the trade summary, and posts it back into the allowlisted group.
+// Receives form submission from the hosted quote form. Auth is via a
+// one-time token that the bot generated when /quote was issued — looking
+// it up in Upstash also tells us which chat to post the summary back to.
 
-const { validateInitData } = require('../src/telegram/initData');
+const { consumeQuoteToken } = require('../src/telegram/session');
 const { fetchSpot } = require('../src/telegram/spotPrice');
 const { formatQuoteSummary } = require('../src/telegram/quote');
 const { sendMessage } = require('../src/telegram/api');
@@ -20,11 +20,13 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return bad(res, 405, 'Method not allowed');
 
   const body = req.body || {};
-  const { initData, side, symbol, client, deposit, fee } = body;
+  const { token, side, symbol, client, deposit, fee } = body;
 
-  // Auth: validate Telegram Web App initData against our bot token
-  const validation = validateInitData(initData, process.env.TELEGRAM_BOT_TOKEN);
-  if (!validation.ok) return bad(res, 401, `auth: ${validation.reason}`);
+  // Auth: consume the one-time token issued by the bot on /quote.
+  const auth = await consumeQuoteToken(token).catch(() => null);
+  if (!auth) return bad(res, 401, 'invalid or expired link — open /quote in the group again');
+  const targetChat = auth.chatId;
+  if (!targetChat) return bad(res, 400, 'token missing chat');
 
   // Sanitize inputs
   if (side !== 'buy' && side !== 'sell') return bad(res, 400, 'bad side');
@@ -34,9 +36,6 @@ module.exports = async function handler(req, res) {
   const f = Number(fee);
   if (!(dep > 0)) return bad(res, 400, 'deposit must be positive');
   if (!Number.isFinite(f)) return bad(res, 400, 'fee must be a number');
-
-  const allowedChat = process.env.TELEGRAM_ALLOWED_GROUP_ID;
-  if (!allowedChat) return bad(res, 500, 'TELEGRAM_ALLOWED_GROUP_ID not configured');
 
   try {
     const spotResult = await fetchSpot(symbol);
@@ -49,7 +48,7 @@ module.exports = async function handler(req, res) {
       fee: f,
       spot: spotResult.price,
     });
-    await sendMessage({ chat_id: allowedChat, text: summary, parse_mode: 'Markdown' });
+    await sendMessage({ chat_id: targetChat, text: summary, parse_mode: 'Markdown' });
     return res.status(200).json({ ok: true });
   } catch (err) {
     console.error('quote-submit error:', err && err.stack || err);

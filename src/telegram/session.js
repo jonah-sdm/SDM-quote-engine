@@ -3,7 +3,8 @@
 // so it works from Vercel serverless cold starts.
 
 const SESSION_TTL_SECONDS = 10 * 60;
-const SYMBOLS_TTL_SECONDS = 60 * 60; // 1 hour
+const SYMBOLS_TTL_SECONDS = 60 * 60;     // 1 hour
+const QUOTE_TOKEN_TTL_SECONDS = 15 * 60; // 15 min
 
 let _redis = null;
 function client() {
@@ -47,7 +48,25 @@ async function clearCachedSymbols() {
   await client().del(SYMBOLS_KEY);
 }
 
+// One-time token for opening the quote form. Single-use, 15-min TTL.
+// Maps token -> { chatId, userId, createdAt }.
+const tokenKey = (token) => `quotetoken:${token}`;
+
+async function setQuoteToken(token, data) {
+  await client().set(tokenKey(token), JSON.stringify(data), { ex: QUOTE_TOKEN_TTL_SECONDS });
+}
+
+async function consumeQuoteToken(token) {
+  if (!token) return null;
+  const v = await client().get(tokenKey(token));
+  if (!v) return null;
+  // Single-use: delete after read so a token can't be replayed.
+  await client().del(tokenKey(token)).catch(() => {});
+  return typeof v === 'string' ? JSON.parse(v) : v;
+}
+
 module.exports = {
   getSession, setSession, clearSession,
   getCachedSymbols, setCachedSymbols, clearCachedSymbols,
+  setQuoteToken, consumeQuoteToken,
 };

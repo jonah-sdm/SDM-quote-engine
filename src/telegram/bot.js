@@ -1,9 +1,12 @@
 // Telegram update router for the /quote bot.
-// /quote opens a Web App (single-screen form). The form posts to
-// /api/quote-submit which fetches SDM spot and posts the trade summary
-// back into the chat.
+// /quote → bot replies with a single inline-keyboard URL button to the
+// hosted quote form. URL contains a one-time token that the form submits
+// back, letting /api/quote-submit authenticate the request and find the
+// chat to post the trade summary to.
 
+const crypto = require('crypto');
 const tg = require('./api');
+const { setQuoteToken } = require('./session');
 
 const DEFAULT_FORM_URL = 'https://sdm-quote-engine.vercel.app/quote-form.html';
 
@@ -19,8 +22,6 @@ function quoteFormUrl() {
 
 async function handleUpdate(update) {
   if (update.message) return handleMessage(update.message);
-  // We no longer use callback_query / ForceReply replies in the new flow.
-  // Acknowledge any stray callback so Telegram stops spinning.
   if (update.callback_query) {
     return tg.answerCallbackQuery({ callback_query_id: update.callback_query.id }).catch(() => {});
   }
@@ -28,19 +29,23 @@ async function handleUpdate(update) {
 
 async function handleMessage(msg) {
   const chatId = msg.chat && msg.chat.id;
+  const userId = msg.from && msg.from.id;
   if (!chatId) return;
   if (!isAllowedChat(chatId)) return;
 
   const text = (msg.text || '').trim();
 
   if (text.startsWith('/quote')) {
+    const token = crypto.randomBytes(16).toString('hex');
+    await setQuoteToken(token, { chatId, userId, createdAt: Date.now() });
+    const url = `${quoteFormUrl()}?t=${token}`;
     await tg.sendMessage({
       chat_id: chatId,
-      text: '*New trade quote*\nTap below to open the form.',
+      text: '*New trade quote*\nTap below to open the form. Link is single-use, valid for 15 minutes.',
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [[
-          { text: '📋 Open quote form', web_app: { url: quoteFormUrl() } },
+          { text: '📋 Open quote form', url },
         ]],
       },
     });

@@ -129,6 +129,11 @@
     if (tg) { tg.ready(); tg.expand(); }
 
     const state = { side: 'buy' };
+    const TOKEN = new URLSearchParams(window.location.search).get('t') || '';
+    if (!TOKEN) {
+      document.getElementById('error').textContent = 'No access token — open this from /quote in the Telegram group.';
+      document.getElementById('submit-btn').disabled = true;
+    }
 
     function $(id) { return document.getElementById(id); }
     function showErr(msg) { $('error').textContent = msg || ''; }
@@ -184,7 +189,7 @@
       btn.textContent = 'Submitting…';
 
       const payload = {
-        initData: tg ? tg.initData : '',
+        token: TOKEN,
         side: state.side,
         symbol: $('pair').value,
         client: $('client').value,
@@ -201,7 +206,8 @@
         const data = await r.json().catch(function () { return {}; });
         if (!r.ok || !data.ok) throw new Error(data.error || ('HTTP ' + r.status));
         btn.textContent = 'Quote sent ✓';
-        setTimeout(function () { if (tg) tg.close(); }, 700);
+        showErr('Summary posted to the group. You can close this window.');
+        setTimeout(function () { if (tg && tg.close) tg.close(); }, 1200);
       } catch (e) {
         showErr(e.message || 'Failed');
         btn.disabled = false;
