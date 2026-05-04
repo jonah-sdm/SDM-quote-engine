@@ -1,7 +1,5 @@
 {
   "functions": {
-    "api/telegram.js":      { "maxDuration": 15, "memory": 256 },
-    "api/symbols.js":       { "maxDuration": 15, "memory": 256 },
-    "api/quote-submit.js":  { "maxDuration": 15, "memory": 256 }
+    "api/telegram.js": { "maxDuration": 15, "memory": 256 }
   }
 }

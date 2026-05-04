@@ -53,15 +53,15 @@ function formatDate(d = new Date()) {
 // Telegram MarkdownV1 — single asterisks for bold.
 function formatQuoteSummary({ client, pair, side, deposit, fee, spot, date }) {
   const { dealtRate, ccyPurchased, depositCcy, purchasedCcy } = computeQuote({ side, pair, deposit, fee, spot });
-  const lines = [
-    '*Trade Summary*',
-    `Client: ${client}`,
+  const lines = ['*Indicative Summary*'];
+  if (client && String(client).trim()) lines.push(`Client: ${String(client).trim()}`);
+  lines.push(
     `Date: ${formatDate(date instanceof Date ? date : (date ? new Date(date) : new Date()))}`,
     `CCY Deposited: ${formatAmount(deposit)} ${depositCcy}`,
     `Spot Price: ${formatRate(spot)} ${pair}`,
     `Dealt Rate: ${formatRate(dealtRate)} ${pair}`,
     `CCY Purchased: ${formatAmount(ccyPurchased)} ${purchasedCcy}`,
-  ];
+  );
   return lines.join('\n');
 }
 
